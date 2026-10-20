@@ -6,7 +6,7 @@ Diagrama entidad-relación:
   Reserva (Id PK, Usuario FK, Mesa FK, Comensales, Fecha/hora, Nombre, Observación)
   Mesa    (Id PK, #Mesa, Capacidad, Ubicación)
 
-Flujo: Crear cuenta -> Iniciar sesión -> Formulario de reserva -> Ticket
+Flujo con sesión activa: Información del usuario -> Formulario de reserva -> Ticket
 """
 import hashlib
 import hmac
@@ -95,15 +95,21 @@ def crear_cuenta_db(con, nombre, telefono, documentacion, otro_contacto, clave):
 def validar_usuario(con, documentacion, clave):
     """Devuelve un dict con el usuario si los datos son correctos, o None."""
     fila = con.execute(
-        "SELECT id, nombre, telefono, sal, clave_hash FROM usuario WHERE documentacion = ?",
+        "SELECT id, nombre, telefono, documentacion, otro_contacto, sal, clave_hash FROM usuario WHERE documentacion = ?",
         (documentacion,),
     ).fetchone()
     if fila is None:
         return None
-    id_, nombre, telefono, sal, clave_hash = fila
+    id_, nombre, telefono, doc, otro, sal, clave_hash = fila
     if not hmac.compare_digest(_hash(clave, sal), clave_hash):
         return None
-    return {"id": id_, "nombre": nombre, "telefono": telefono}
+    return {
+        "id": id_,
+        "nombre": nombre,
+        "telefono": telefono,
+        "documentacion": doc,
+        "otro_contacto": otro,
+    }
 
 
 # =====================================================
@@ -184,7 +190,7 @@ def mis_reservas(con, usuario_id):
 
 
 # =====================================================
-#  TICKET
+#  TICKET Y PERFIL DE USUARIO
 # =====================================================
 def generar_ticket(con, reserva_id, usuario_id):
     fila = con.execute("""
@@ -213,11 +219,23 @@ def generar_ticket(con, reserva_id, usuario_id):
     )
 
 
+def opcion_ver_informacion_usuario(usuario):
+    linea = "=" * 36
+    print(f"\n{linea}")
+    print("      INFORMACIÓN DEL USUARIO")
+    print(linea)
+    print(f"Nombre:        {usuario['nombre']}")
+    print(f"Teléfono:      {usuario['telefono']}")
+    print(f"Documentación: {usuario['documentacion']}")
+    print(f"Otro contacto: {usuario['otro_contacto'] or '-'}")
+    print(linea)
+
+
 # =====================================================
 #  OPCIONES DEL MENÚ
 # =====================================================
 def opcion_crear_cuenta(con):
-    print("\n--- Crear cuenta (llenar datos) ---")
+    print("\n--- Crear cuenta ---")
     nombre = pedir_texto("Nombre: ")
     telefono = pedir_texto("#Teléfono: ")
     documentacion = pedir_texto("Documentación: ")
@@ -228,7 +246,7 @@ def opcion_crear_cuenta(con):
         return
     try:
         crear_cuenta_db(con, nombre, telefono, documentacion, otro, clave)
-        print("Cuenta creada. Ahora inicia sesión (opción 2).")
+        print("Cuenta creada con éxito. Ya puedes iniciar sesión.")
     except ValueError as e:
         print(e)
 
@@ -241,7 +259,7 @@ def opcion_iniciar_sesion(con):
     if usuario is None:
         print("Documentación o contraseña incorrecta.")
     else:
-        print(f"Bienvenido, {usuario['nombre']}.")
+        print(f"\n¡Bienvenido/a, {usuario['nombre']}!")
     return usuario
 
 
@@ -256,9 +274,11 @@ def opcion_formulario_reserva(con, usuario):
     if not libres:
         print("No hay mesas disponibles para esa fecha/hora y cantidad de personas.")
         return
+
     print("\nMesas disponibles:")
     for _id, numero, capacidad, ubicacion in libres:
-        print(f"  Mesa #{numero} - capacidad {capacidad} - {ubicacion}")
+        print(f"  Mesa #{numero} | Capacidad: {capacidad} pers. | Ubicación: {ubicacion}")
+
     numeros = {m[1]: m[0] for m in libres}
     while True:
         elegida = pedir_entero("Número de mesa: ")
@@ -266,8 +286,9 @@ def opcion_formulario_reserva(con, usuario):
             break
         print("Esa mesa no está en la lista de disponibles.")
 
-    rid = crear_reserva(con, usuario["id"], numeros[elegida], comensales,
-                        fecha_hora, nombre, observacion)
+    rid = crear_reserva(
+        con, usuario["id"], numeros[elegida], comensales, fecha_hora, nombre, observacion
+    )
     print("\n" + generar_ticket(con, rid, usuario["id"]))
 
 
@@ -288,13 +309,17 @@ def opcion_ver_reservas(con, usuario):
 def mostrar_menu(usuario):
     print("\n" + "=" * 40)
     if usuario:
-        print(f"Sesión: {usuario['nombre']}")
-    print("1. Crear Cuenta")
-    print("2. Iniciar Sesión")
-    print("3. Llenar Formulario de Reserva")
-    print("4. Ver Mis Reservas")
-    print("5. Cerrar Sesión")
-    print("6. Salir")
+        print(f"Sesión activa: {usuario['nombre']}")
+        print("1. Información del usuario")
+        print("2. Llenar Formulario de Reserva")
+        print("3. Ver Mis Reservas")
+        print("4. Cerrar Sesión")
+        print("5. Salir")
+    else:
+        print("MENÚ PRINCIPAL")
+        print("1. Crear Cuenta")
+        print("2. Iniciar Sesión")
+        print("3. Salir")
 
 
 # =====================================================
@@ -304,31 +329,39 @@ def main():
     con = conectar()
     crear_tablas(con)
     usuario = None
+
     while True:
         mostrar_menu(usuario)
-        opcion = input("Seleccione una opción (1-6): ").strip()
-        if opcion == "1":
-            opcion_crear_cuenta(con)
-        elif opcion == "2":
-            if usuario:
-                print("Ya tienes una sesión abierta. Ciérrala primero (opción 5).")
-            else:
+        opcion = input("Seleccione una opción: ").strip()
+
+        if usuario is None:
+            # Menú público
+            if opcion == "1":
+                opcion_crear_cuenta(con)
+            elif opcion == "2":
                 usuario = opcion_iniciar_sesion(con)
-        elif opcion in ("3", "4"):
-            if usuario is None:
-                print("Primero inicia sesión (opción 2).")
             elif opcion == "3":
-                opcion_formulario_reserva(con, usuario)
+                print("Hasta pronto.")
+                break
             else:
-                opcion_ver_reservas(con, usuario)
-        elif opcion == "5":
-            print("Sesión cerrada." if usuario else "No hay sesión abierta.")
-            usuario = None
-        elif opcion == "6":
-            print("Hasta pronto.")
-            break
+                print("Opción inválida. Elige una opción del 1 al 3.")
         else:
-            print("Opción inválida. Escribe un número del 1 al 6.")
+            # Menú para usuario autenticado
+            if opcion == "1":
+                opcion_ver_informacion_usuario(usuario)
+            elif opcion == "2":
+                opcion_formulario_reserva(con, usuario)
+            elif opcion == "3":
+                opcion_ver_reservas(con, usuario)
+            elif opcion == "4":
+                print(f"Sesión cerrada. ¡Hasta luego, {usuario['nombre']}!")
+                usuario = None
+            elif opcion == "5":
+                print("Hasta pronto.")
+                break
+            else:
+                print("Opción inválida. Elige una opción del 1 al 5.")
+
     con.close()
 
 
